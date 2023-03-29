@@ -1,4 +1,5 @@
 import torch
+import sys
 import csv
 import random
 import torch.nn.functional as F
@@ -8,6 +9,7 @@ from torch_geometric.data import Data
 import torch.nn as nn
 from torch_geometric.nn import GCNConv, GATConv, global_add_pool
 from torch_geometric.loader import DataLoader
+from torch.utils.data import random_split
 
 from glob import glob
 import matplotlib.pyplot as plt
@@ -81,8 +83,9 @@ class CustomModel(torch.nn.Module):
         self.num_features = num_features
         self.target_size = target_size
         self.num_edge_features = num_edge_features
-        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features),
-                      GATConv(self.hidden_size, self.hidden_size, edge_dim = self.num_edge_features)]
+        #self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features),
+        #              GATConv(self.hidden_size, self.hidden_size, edge_dim = self.num_edge_features)]
+        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(int(sys.argv[4])-1)]
         self.linear = nn.Linear(self.hidden_size, self.target_size)
 
     # x          = num nodes x num_node_features (i.e. list of all node features)
@@ -90,8 +93,9 @@ class CustomModel(torch.nn.Module):
     # edge_attr  = num_edges x num_edge_features
     def forward(self, data):
         node_features, edge_index, edge_features = data.x, data.edge_index, data.edge_attr
-        for conv in self.convs[:-1]:
-            x = conv(node_features, edge_index, edge_attr=edge_features) # adding edge features here!
+        x = self.convs[0](node_features, edge_index, edge_attr=edge_features) # adding edge features here!
+        for conv in self.convs[1:-1]:
+            x = conv(x, edge_index, edge_attr=edge_features) # adding edge features here!
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
         x = self.convs[-1](x, edge_index, edge_attr=edge_features)
@@ -117,7 +121,7 @@ Saves the following CSVs over the course of training:
 '''
 
 #model = GNNModel()
-model = CustomModel()
+model = CustomModel(hidden_size=int(sys.argv[3]))
 
 #uuunode_features = torch.ones(111,1).float()
 #edge_index = torch.ones(2,111*111).int()
@@ -126,12 +130,13 @@ model = CustomModel()
 #print(result)
 
 hyperparams = {
-    'batch_size' : 10,
+    'batch_size' : int(sys.argv[1]),
     'save_loss_interval' : 10,
     'print_interval' : 50,
     'save_model_interval' : 250,
-    'n_epochs' : 1500,
-    'learning_rate' : 0.001
+    'n_epochs' : 10,
+    'learning_rate' : float(sys.argv[2]),
+    'train_split': 0.8,
 }
 
 learning_rate = hyperparams['learning_rate']
@@ -147,10 +152,13 @@ NUM_TEST = 160 # number of valid items
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 #loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
-train_dataset = CustomDataset('/Users/aritchetchenian/Desktop/graph_cnn/train')
-trainloader = DataLoader(train_dataset, shuffle=True, batch_size=hyperparams['batch_size'], drop_last=True)
 
-valid_dataset = CustomDataset('/Users/aritchetchenian/Desktop/graph_cnn/valid')
+whole_dataset = CustomDataset('/Users/aritchetchenian/Desktop/GraphConnectome/dataset')
+train_size = int(hyperparams['train_split'] * len(whole_dataset))
+valid_size = len(whole_dataset) - train_size
+train_dataset, valid_dataset = random_split(whole_dataset, [train_size, valid_size])
+
+trainloader = DataLoader(train_dataset, shuffle=True, batch_size=hyperparams['batch_size'], drop_last=True)
 validloader = DataLoader(valid_dataset, shuffle=True, batch_size=hyperparams['batch_size'], drop_last=True)
 
 losses = []
@@ -183,7 +191,11 @@ for epoch in range(n_epochs):
     
     print("Min: %.2f, Max: %.2f, Mean: %.2f" % (min(outs), max(outs), sum(outs)/len(outs)))
     print("Train: %.3f\tValid: %.3f" % (epoch_loss/batch_count, valid_loss/valid_count))
-            
+
+#result = np.array([min(outs), max(outs), sum(outs)/len(outs), epoch_loss/batch_count, valid_loss/valid_count])
+#save_string = '_'.join(sys.argv[1:]) + '.npy'
+#np.save('./logs/' + save_string, result)
+
 """
     if epoch % save_loss_interval == 0:
         val_loss = evaluate_model(model, data_val) / NUM_VAL
