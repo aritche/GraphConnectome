@@ -1,4 +1,5 @@
 train/
 valid/
 dataset/
+logs/
 .DS_Store
