@@ -2,7 +2,6 @@ import torch
 import sys
 import csv
 import random
-import torch.nn.functional as F
 import numpy as np
 from torch_geometric.data import Data
 
@@ -49,33 +48,6 @@ class CustomDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.subjects)
 
-# Basically the same as the baseline except we pass edge features 
-class GNNModel(torch.nn.Module):
-    def __init__(self, num_features=1, hidden_size=32, target_size=1, num_edge_features=2):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_features = num_features
-        self.target_size = target_size
-        self.num_edge_features = num_edge_features
-        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features),
-                      GATConv(self.hidden_size, self.hidden_size, edge_dim = self.num_edge_features)]
-        self.linear = nn.Linear(self.hidden_size, self.target_size)
-
-    # x          = num nodes x num_node_features (i.e. list of all node features)
-    # edge_index = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, put both e.g. [0,1] and [1,0])
-    # edge_attr  = num_edges x num_edge_features
-    def forward(self, data):
-        node_features, edge_index, edge_features = data.x, data.edge_index, data.edge_attr
-        for conv in self.convs[:-1]:
-            x = conv(node_features, edge_index, edge_attr=edge_features) # adding edge features here!
-            x = F.relu(x)
-            x = F.dropout(x, training=self.training)
-        x = self.convs[-1](x, edge_index, edge_attr=edge_features)
-        x = self.linear(x)
-
-        return F.relu(x) 
-
-# Basically the same as the baseline except we pass edge features 
 class CustomModel(torch.nn.Module):
     def __init__(self, num_features=1, hidden_size=32, target_size=1, num_edge_features=2):
         super().__init__()
@@ -83,10 +55,10 @@ class CustomModel(torch.nn.Module):
         self.num_features = num_features
         self.target_size = target_size
         self.num_edge_features = num_edge_features
-        #self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features),
-        #              GATConv(self.hidden_size, self.hidden_size, edge_dim = self.num_edge_features)]
         self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(int(sys.argv[4])-1)]
         self.linear = nn.Linear(self.hidden_size, self.target_size)
+        self.dropout = nn.Dropout(p=0.5)
+        self.relu = nn.ReLU()
 
     # x          = num nodes x num_node_features (i.e. list of all node features)
     # edge_index = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, put both e.g. [0,1] and [1,0])
@@ -96,8 +68,8 @@ class CustomModel(torch.nn.Module):
         x = self.convs[0](node_features, edge_index, edge_attr=edge_features) # adding edge features here!
         for conv in self.convs[1:-1]:
             x = conv(x, edge_index, edge_attr=edge_features) # adding edge features here!
-            x = F.relu(x)
-            x = F.dropout(x, training=self.training)
+            x = self.relu(x)
+            x = self.dropout(x)
         x = self.convs[-1](x, edge_index, edge_attr=edge_features)
 
         batch = [[x for i in range(111)] for x in range(hyperparams['batch_size'])]
@@ -105,10 +77,7 @@ class CustomModel(torch.nn.Module):
         x = global_add_pool(x, batch=torch.tensor(batch))
         x = self.linear(x)
 
-        return F.relu(x) 
-
-def evaluate_model(model, data_iter):
-    return sum([F.mse_loss(model(data), data.y).item() for data in data_iter])
+        return self.relu(x) 
 
 ''' 
 Train model with given hyperparams dict.
@@ -195,15 +164,3 @@ for epoch in range(n_epochs):
 #result = np.array([min(outs), max(outs), sum(outs)/len(outs), epoch_loss/batch_count, valid_loss/valid_count])
 #save_string = '_'.join(sys.argv[1:]) + '.npy'
 #np.save('./logs/' + save_string, result)
-
-"""
-    if epoch % save_loss_interval == 0:
-        val_loss = evaluate_model(model, data_val) / NUM_VAL
-        train_loss = epoch_loss / NUM_TRAIN * batch_size
-        if epoch % print_interval == 0:
-            print("Epoch: {} Train loss: {:.2e} Validation loss: {:.2e}".format(epoch, train_loss, val_loss))
-        losses.append((epoch, train_loss, val_loss))
-    if epoch % save_model_interval == 0:
-        # save predictions for plotting
-        model.eval()
-"""
