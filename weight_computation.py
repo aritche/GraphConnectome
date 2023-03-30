@@ -5,6 +5,8 @@ from glob import glob
 import vtk
 import time
 import csv
+import json
+import pickle
 
 def streamline_count(filename):
     # Create a reader for .vtp files
@@ -137,6 +139,7 @@ t0 = time.time()
 gm_mapping = get_gm_mapping('GM_ids.txt')                    # region name  -> [ID1, ID2, ...]
 labels = get_labels('cluster_hemisphere_location.txt')       # cluster name -> 'h' or 'c'
 tracts = get_tracts('FiberClusterAnnotation_k0800_v1.0.csv') # cluster name -> tract or falsepositive or partial or unkown
+subjects = get_subject_mapping('HCP_n1065_allDWI_fiber_clusters.csv')
 
 clusters = tracts.keys()
 cluster_fns = []
@@ -207,11 +210,16 @@ for regionA in regions:
     i+=1
     #print("%d/%d = (%.2f mins on average, i.e. %.2f for all remaining regions)" % (i,len(regions),sum(times)/len(times)/60, sum(times)/len(times)/60*(111-i)))
 
+with open('weights.json', 'w') as f:
+    json.dump(atlas_weights, f)
+with open('weights.pkl', 'wb') as f:
+    pickle.dump(atlas_weights, f)
+    
+
 t1 = time.time()
 print('Time for weight computation: %.2f minutes' % ((t1 - t0)/60))
 
 t2 = time.time()
-subjects = get_subject_mapping('HCP_n1065_allDWI_fiber_clusters.csv')
 connectome = {}
 times = []
 for subject in subjects.keys():
@@ -238,7 +246,8 @@ for subject in subjects.keys():
                 cluster_total_sl_subject = subjects[subject][cluster]['Num_Fibers']
                 cluster_level_weight = cluster_connecting_sl_atlas / cluster_total_sl_atlas
                 region_level_weight = cluster_connecting_sl_atlas / sum(cluster_NoS_R12)
-                sl_weight += cluster_total_sl_subject * cluster_level_weight * region_level_weight
+                #sl_weight += cluster_total_sl_subject * cluster_level_weight * region_level_weight
+                sl_weight += cluster_total_sl_subject * cluster_level_weight
 
                 # Compute FA weight
                 cluster_total_points_atlas = cluster_NoP[i]
@@ -246,7 +255,8 @@ for subject in subjects.keys():
                 cluster_FA_subject = subjects[subject][cluster]['FA1.Mean']
                 cluster_level_weight = cluster_connecting_points_atlas / cluster_total_points_atlas
                 region_level_weight = cluster_connecting_points_atlas / sum(cluster_NoP_R12)
-                points_weight += cluster_FA_subject * cluster_level_weight * region_level_weight
+                #points_weight += cluster_FA_subject * cluster_level_weight * region_level_weight
+                points_weight += cluster_FA_subject * region_level_weight
         
             if regionA not in connectome[subject]:
                 connectome[subject][regionA] = {}
@@ -254,7 +264,9 @@ for subject in subjects.keys():
             if len(connecting_clusters) == 0:
                 connectome[subject][regionA][regionB] = [0, 0]
             else:
-                connectome[subject][regionA][regionB] = [sl_weight / len(connecting_clusters), points_weight / len(connecting_clusters)]
+                connectome[subject][regionA][regionB] = [sl_weight, points_weight]
+            #else:
+            #    connectome[subject][regionA][regionB] = [sl_weight / len(connecting_clusters), points_weight / len(connecting_clusters)]
 
     i += 1
     times.append(time.time() - time_start)
@@ -278,6 +290,6 @@ for subject in subjects:
                 result[-1].append(connectome[subject][regionA][regionB])
 
     # Converting to numpy
-    print('Converting to numpy...')
+    #print('Converting to numpy...')
     result = np.array(result)
     np.save('./results/' + subject + '.npy', result)
