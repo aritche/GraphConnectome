@@ -2,7 +2,7 @@ from glob import glob
 import numpy as np
 
 i = 0
-for fn in glob('../Fan_Files/results/*.npy'):
+for fn in glob('./results/*.npy'):
     x = np.load(fn)
 
     rows = []
@@ -26,9 +26,9 @@ for fn in glob('../Fan_Files/results/*.npy'):
 
     subject_id = fn.split('/')[-1].split('.')[0]
 
-    np.save('./node_features/' + subject_id + '.npy', node_features)
-    np.save('./edge_features/' + subject_id + '.npy', edge_features)
-    np.save('./edge_index/' + subject_id + '.npy', edge_index)
+    np.save('./dataset/node_features/' + subject_id + '.npy', node_features)
+    np.save('./dataset/edge_features/' + subject_id + '.npy', edge_features)
+    np.save('./dataset/edge_index/' + subject_id + '.npy', edge_index)
 
     print(i)
     i += 1
