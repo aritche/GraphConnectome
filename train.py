@@ -122,7 +122,7 @@ NUM_TEST = 160 # number of valid items
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 #loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
 
-whole_dataset = CustomDataset('/Users/aritchetchenian/Desktop/GraphConnectome/dataset')
+whole_dataset = CustomDataset('./dataset')
 train_size = int(hyperparams['train_split'] * len(whole_dataset))
 valid_size = len(whole_dataset) - train_size
 train_dataset, valid_dataset = random_split(whole_dataset, [train_size, valid_size])
@@ -135,9 +135,11 @@ for epoch in range(n_epochs):
     model.train()
     epoch_loss = 0
     batch_count = 0
+    train_outs = []
     for data in trainloader:
         optimizer.zero_grad()
         out = model(data)
+        train_outs += list(out.detach().numpy().flatten())
         loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
         epoch_loss += loss.item() 
         loss.backward()
@@ -158,9 +160,10 @@ for epoch in range(n_epochs):
             valid_loss += loss.item()
             valid_count += 1
     
-    print("Min: %.2f, Max: %.2f, Mean: %.2f" % (min(outs), max(outs), sum(outs)/len(outs)))
+    print("TRAIN Min: %.2f, Max: %.2f, Mean: %.2f" % (min(train_outs), max(train_outs), sum(train_outs)/len(train_outs)))
+    print("VALID Min: %.2f, Max: %.2f, Mean: %.2f" % (min(outs), max(outs), sum(outs)/len(outs)))
     print("Train: %.3f\tValid: %.3f" % (epoch_loss/batch_count, valid_loss/valid_count))
 
-#result = np.array([min(outs), max(outs), sum(outs)/len(outs), epoch_loss/batch_count, valid_loss/valid_count])
-#save_string = '_'.join(sys.argv[1:]) + '.npy'
-#np.save('./logs/' + save_string, result)
+result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), epoch_loss/batch_count, valid_loss/valid_count])
+save_string = '_'.join(sys.argv[1:]) + '.npy'
+np.save('./logs/' + save_string, result)
