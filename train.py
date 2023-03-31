@@ -72,7 +72,7 @@ class CustomModel(torch.nn.Module):
             x = self.dropout(x)
         x = self.convs[-1](x, edge_index, edge_attr=edge_features)
 
-        batch = [[x for i in range(111)] for x in range(hyperparams['batch_size'])]
+        batch = [[x for i in range(84)] for x in range(hyperparams['batch_size'])]
         batch = [j for i in batch for j in i]
         x = global_add_pool(x, batch=torch.tensor(batch))
         x = self.linear(x)
@@ -122,7 +122,7 @@ NUM_TEST = 160 # number of valid items
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 #loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
 
-whole_dataset = CustomDataset('./dataset')
+whole_dataset = CustomDataset('./84x84_dataset')
 train_size = int(hyperparams['train_split'] * len(whole_dataset))
 valid_size = len(whole_dataset) - train_size
 train_dataset, valid_dataset = random_split(whole_dataset, [train_size, valid_size])
