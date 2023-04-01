@@ -38,14 +38,15 @@ class CustomDataset(torch.utils.data.Dataset):
 
         for subject in subject_ids:
             edge_features = np.load(dataset_dir + '/edge_features/' + subject + '.npy')
-            #node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
-            node_features = np.reshape(np.array([i for i in range(84)]),(84,1))
+            node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
+            #node_features = np.reshape(np.array([i for i in range(84)]),(84,1))
             #print(node_features.shape)
 
             edge_index = np.load(dataset_dir + '/edge_index/' + subject + '.npy')
 
-            # normalise into range [0,1]
-            edge_features = (edge_features - np.min(edge_features)) / (np.max(edge_features) - np.min(edge_features))
+            # normalise each feature into range [0,1]
+            for i in range(edge_features.shape[-1]):
+                edge_features[:,i] = (edge_features[:,i] - np.min(edge_features[:,i])) / (np.max(edge_features[:,i]) - np.min(edge_features[:,i]))
 
             # add random noise
             #edge_features += np.random.rand(edge_features.shape) * 0.001
@@ -128,7 +129,7 @@ else:
     device = torch.device('cpu')
 
 #model = GNNModel()
-model = CustomModel(num_features=1, hidden_size=int(sys.argv[3]))
+model = CustomModel(num_features=84, hidden_size=int(sys.argv[3]))
 model.to(device)
 
 
@@ -143,7 +144,7 @@ hyperparams = {
     'save_loss_interval' : 10,
     'print_interval' : 50,
     'save_model_interval' : 250,
-    'n_epochs' : 10,
+    'n_epochs' : 20,
     'learning_rate' : float(sys.argv[2]),
     'train_split': 0.9,
 }
@@ -236,7 +237,7 @@ for epoch in range(n_epochs):
 #result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), train_loss/train_count, valid_loss/valid_count])
 save_string = '_'.join(sys.argv[1:]) + '.npy'
 
-np.save('./logs/valid_loss_' + save_string, np.array(valid_loss))
-np.save('./logs/train_loss_' + save_string, np.array(train_loss))
+np.save('./logs/valid_loss_' + save_string, np.array(valid_losses))
+np.save('./logs/train_loss_' + save_string, np.array(train_losses))
 np.save('./logs/valid_stats_' + save_string, np.array(valid_stats))
 np.save('./logs/train_stats_' + save_string, np.array(train_stats))
