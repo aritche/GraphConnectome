@@ -59,8 +59,15 @@ for fn in glob('./111x111_connectomes/*.npy'):
     edge_features = []
     node_features = []
 
+    # temporarily remove self edges 
+    no_self_edges = x.copy()
     for row in range(len(x)):
-        node_features.append([0]) # constant node features
+        no_self_edges[row][row][0] = 0
+        no_self_edges[row][row][1] = 0
+
+    for row in range(len(x)):
+        #node_features.append([0]) # constant node features
+        node_features.append(no_self_edges[row,:,0]) # SL profile as node features
         for col in range(len(x[row])):
             if row == col: # exclude self-edges
                 continue
