@@ -106,9 +106,16 @@ Saves the following CSVs over the course of training:
    and the predicted values vs actual values in `results/baseline_0.05_0_out_of_1000_prediction.csv' on the test data.
 '''
 
-loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
-score_plotter = VisdomLinePlotter(env_name='Age Prediction')
-vis = visdom.Visdom()
+if sys.argv[5].lower() == 'y':
+    plot_mode = True
+else:
+    plot_mode = False
+
+if plot_mode:
+    loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
+    score_plotter = VisdomLinePlotter(env_name='Age Prediction')
+    vis = visdom.Visdom()
+
 train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
 valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
 train_win = None
@@ -136,7 +143,7 @@ hyperparams = {
     'save_loss_interval' : 10,
     'print_interval' : 50,
     'save_model_interval' : 250,
-    'n_epochs' : 20,
+    'n_epochs' : 10,
     'learning_rate' : float(sys.argv[2]),
     'train_split': 0.9,
 }
@@ -204,19 +211,20 @@ for epoch in range(n_epochs):
     scheduler.step(valid_loss)
     print('Current learning rate: %f' % (optimizer.param_groups[0]['lr']))
     
-    loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count)
-    loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count)
+    if plot_mode:
+        loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count)
+        loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count)
 
-    score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs))
-    score_plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs))
-    score_plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs))
+        score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs))
+        score_plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs))
+        score_plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs))
 
-    score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(outs))
-    score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
-    score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
+        score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(outs))
+        score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
+        score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
 
-    train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
-    valid_win = vis.histogram(outs, win=valid_win, opts=valid_opts, env='Age Prediction')
+        train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
+        valid_win = vis.histogram(outs, win=valid_win, opts=valid_opts, env='Age Prediction')
 
     valid_losses.append(valid_loss/valid_count)
     train_losses.append(train_loss/train_count)
