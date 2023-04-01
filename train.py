@@ -38,14 +38,17 @@ class CustomDataset(torch.utils.data.Dataset):
 
         for subject in subject_ids:
             edge_features = np.load(dataset_dir + '/edge_features/' + subject + '.npy')
-            node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
+            #node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
+            node_features = np.reshape(np.array([i for i in range(84)]),(84,1))
+            #print(node_features.shape)
+
             edge_index = np.load(dataset_dir + '/edge_index/' + subject + '.npy')
 
             # normalise into range [0,1]
             edge_features = (edge_features - np.min(edge_features)) / (np.max(edge_features) - np.min(edge_features))
 
             # add random noise
-            #edge_features += np.random.rand(edge_features.shape) * 0
+            #edge_features += np.random.rand(edge_features.shape) * 0.001
 
             label = self.labels[subject]
             self.subjects.append(Data(x=torch.from_numpy(node_features).float(), edge_index=torch.from_numpy(edge_index).long(), edge_attr=torch.from_numpy(edge_features).float(), y=label))
@@ -75,6 +78,8 @@ class CustomModel(torch.nn.Module):
     def forward(self, data):
         node_features, edge_index, edge_features = data.x, data.edge_index, data.edge_attr
         x = self.convs[0](node_features, edge_index, edge_attr=edge_features) # adding edge features here!
+        x = self.relu(x)
+        x = self.dropout(x)
         for conv in self.convs[1:-1]:
             x = conv(x, edge_index, edge_attr=edge_features) # adding edge features here!
             x = self.relu(x)
@@ -89,6 +94,7 @@ class CustomModel(torch.nn.Module):
         x = self.linear(x)
 
         return self.relu(x) 
+        #return x
 
 ''' 
 Train model with given hyperparams dict.
@@ -100,7 +106,8 @@ Saves the following CSVs over the course of training:
    and the predicted values vs actual values in `results/baseline_0.05_0_out_of_1000_prediction.csv' on the test data.
 '''
 
-plotter = VisdomLinePlotter(env_name='Age Prediction')
+loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
+score_plotter = VisdomLinePlotter(env_name='Age Prediction')
 vis = visdom.Visdom()
 train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
 valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
@@ -114,7 +121,7 @@ else:
     device = torch.device('cpu')
 
 #model = GNNModel()
-model = CustomModel(hidden_size=int(sys.argv[3]))
+model = CustomModel(num_features=1, hidden_size=int(sys.argv[3]))
 model.to(device)
 
 
@@ -129,9 +136,9 @@ hyperparams = {
     'save_loss_interval' : 10,
     'print_interval' : 50,
     'save_model_interval' : 250,
-    'n_epochs' : 1000,
+    'n_epochs' : 20,
     'learning_rate' : float(sys.argv[2]),
-    'train_split': 0.8,
+    'train_split': 0.9,
 }
 
 learning_rate = hyperparams['learning_rate']
@@ -146,6 +153,7 @@ NUM_VAL = 160 # number of valid items
 NUM_TEST = 160 # number of valid items
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=10)
 #loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
 
 whole_dataset = CustomDataset('./84x84_dataset')
@@ -156,7 +164,10 @@ train_dataset, valid_dataset = random_split(whole_dataset, [train_size, valid_si
 trainloader = DataLoader(train_dataset, shuffle=True, batch_size=hyperparams['batch_size'], drop_last=True)
 validloader = DataLoader(valid_dataset, shuffle=True, batch_size=hyperparams['batch_size'], drop_last=True)
 
-losses = []
+valid_losses = []
+train_losses = []
+valid_stats = []
+train_stats = []
 for epoch in range(n_epochs):
     model.train()
     train_loss = 0
@@ -173,7 +184,6 @@ for epoch in range(n_epochs):
         train_loss += loss.item() 
         loss.backward()
         optimizer.step()
-        losses.append(loss)
         train_count += 1
 
 
@@ -190,23 +200,35 @@ for epoch in range(n_epochs):
             loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
             valid_loss += loss.item()
             valid_count += 1
+
+    scheduler.step(valid_loss)
+    print('Current learning rate: %f' % (optimizer.param_groups[0]['lr']))
     
-    plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count)
-    plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count)
+    loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count)
+    loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count)
 
-    plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs))
-    plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs))
-    plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs))
+    score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs))
+    score_plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs))
+    score_plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs))
 
-    plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(outs))
-    plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
-    plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
+    score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(outs))
+    score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
+    score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
 
     train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
     valid_win = vis.histogram(outs, win=valid_win, opts=valid_opts, env='Age Prediction')
 
+    valid_losses.append(valid_loss/valid_count)
+    train_losses.append(train_loss/train_count)
+    valid_stats.append([min(outs), max(outs), sum(outs)/len(outs)])
+    train_stats.append([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs)])
+
     print(epoch)
 
-result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), train_loss/train_count, valid_loss/valid_count])
+#result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), train_loss/train_count, valid_loss/valid_count])
 save_string = '_'.join(sys.argv[1:]) + '.npy'
-np.save('./logs/' + save_string, result)
+
+np.save('./logs/valid_loss_' + save_string, np.array(valid_loss))
+np.save('./logs/train_loss_' + save_string, np.array(train_loss))
+np.save('./logs/valid_stats_' + save_string, np.array(valid_stats))
+np.save('./logs/train_stats_' + save_string, np.array(train_stats))
