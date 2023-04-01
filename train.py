@@ -11,7 +11,9 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import random_split
 
 from glob import glob
-import matplotlib.pyplot as plt
+
+import visdom
+from visdom_scripts.vis import VisdomLinePlotter
 
 def CustomLoss(output, target):
     criterion = nn.MSELoss()
@@ -55,7 +57,7 @@ class CustomModel(torch.nn.Module):
         self.num_features = num_features
         self.target_size = target_size
         self.num_edge_features = num_edge_features
-        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(int(sys.argv[4])-1)]
+        self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(int(sys.argv[4])-1)])
         self.linear = nn.Linear(self.hidden_size, self.target_size)
         self.dropout = nn.Dropout(p=0.5)
         self.relu = nn.ReLU()
@@ -72,9 +74,11 @@ class CustomModel(torch.nn.Module):
             x = self.dropout(x)
         x = self.convs[-1](x, edge_index, edge_attr=edge_features)
 
-        batch = [[x for i in range(84)] for x in range(hyperparams['batch_size'])]
-        batch = [j for i in batch for j in i]
-        x = global_add_pool(x, batch=torch.tensor(batch))
+        batch = torch.repeat_interleave(torch.arange(hyperparams['batch_size'], device=device), 84)
+        #batch = [[x for i in range(84)] for x in range(hyperparams['batch_size'])]
+        #batch = [j for i in batch for j in i]
+        #x = global_add_pool(x, batch=torch.tensor(batch))
+        x = global_add_pool(x, batch=batch)
         x = self.linear(x)
 
         return self.relu(x) 
@@ -89,8 +93,21 @@ Saves the following CSVs over the course of training:
    and the predicted values vs actual values in `results/baseline_0.05_0_out_of_1000_prediction.csv' on the test data.
 '''
 
+plotter = VisdomLinePlotter(env_name='Age Prediction')
+vis = visdom.Visdom()
+opts = dict(title='Output Histogram', xtickmin=20, xtickmax=40)
+win = None
+#hist = vis.histogram(X=torch.ones(1000), env='Age Prediction', opts=dict(title='Output Histogram'))
+
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+
 #model = GNNModel()
 model = CustomModel(hidden_size=int(sys.argv[3]))
+model.to(device)
+
 
 #uuunode_features = torch.ones(111,1).float()
 #edge_index = torch.ones(2,111*111).int()
@@ -103,7 +120,7 @@ hyperparams = {
     'save_loss_interval' : 10,
     'print_interval' : 50,
     'save_model_interval' : 250,
-    'n_epochs' : 10,
+    'n_epochs' : 1000,
     'learning_rate' : float(sys.argv[2]),
     'train_split': 0.8,
 }
@@ -133,19 +150,22 @@ validloader = DataLoader(valid_dataset, shuffle=True, batch_size=hyperparams['ba
 losses = []
 for epoch in range(n_epochs):
     model.train()
-    epoch_loss = 0
-    batch_count = 0
+    train_loss = 0
+    train_count = 0
     train_outs = []
     for data in trainloader:
         optimizer.zero_grad()
+
+        data = data.to(device)
+
         out = model(data)
-        train_outs += list(out.detach().numpy().flatten())
+        train_outs += list(out.cpu().detach().numpy().flatten())
         loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
-        epoch_loss += loss.item() 
+        train_loss += loss.item() 
         loss.backward()
         optimizer.step()
         losses.append(loss)
-        batch_count += 1
+        train_count += 1
 
 
     model.eval()
@@ -154,16 +174,31 @@ for epoch in range(n_epochs):
     outs = []
     with torch.no_grad():
         for data in validloader:
+            data = data.to(device)
+
             out = model(data)
-            outs += list(out.numpy().flatten())
+            outs += list(out.cpu().numpy().flatten())
             loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
             valid_loss += loss.item()
             valid_count += 1
     
-    print("TRAIN Min: %.2f, Max: %.2f, Mean: %.2f" % (min(train_outs), max(train_outs), sum(train_outs)/len(train_outs)))
-    print("VALID Min: %.2f, Max: %.2f, Mean: %.2f" % (min(outs), max(outs), sum(outs)/len(outs)))
-    print("Train: %.3f\tValid: %.3f" % (epoch_loss/batch_count, valid_loss/valid_count))
+    plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count)
+    plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count)
 
-result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), epoch_loss/batch_count, valid_loss/valid_count])
+    plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs))
+    plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs))
+    plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs))
+
+    plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(outs))
+    plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
+    plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
+
+    #vis.histogram(train_outs, win=hist)
+    win = vis.histogram(train_outs, win=win, opts=opts, env='Age Prediction')
+    #vis.histogram(train_outs, win=hist, update=None)
+
+    print(epoch)
+
+result = np.array([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), min(outs), max(outs), sum(outs)/len(outs), train_loss/train_count, valid_loss/valid_count])
 save_string = '_'.join(sys.argv[1:]) + '.npy'
 np.save('./logs/' + save_string, result)
