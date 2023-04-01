@@ -40,6 +40,13 @@ class CustomDataset(torch.utils.data.Dataset):
             edge_features = np.load(dataset_dir + '/edge_features/' + subject + '.npy')
             node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
             edge_index = np.load(dataset_dir + '/edge_index/' + subject + '.npy')
+
+            # normalise into range [0,1]
+            edge_features = (edge_features - np.min(edge_features)) / (np.max(edge_features) - np.min(edge_features))
+
+            # add random noise
+            #edge_features += np.random.rand(edge_features.shape) * 0
+
             label = self.labels[subject]
             self.subjects.append(Data(x=torch.from_numpy(node_features).float(), edge_index=torch.from_numpy(edge_index).long(), edge_attr=torch.from_numpy(edge_features).float(), y=label))
             #self.subjects.append([torch.from_numpy(node_features), torch.from_numpy(edge_index), torch.from_numpy(edge_features), label])
@@ -95,8 +102,10 @@ Saves the following CSVs over the course of training:
 
 plotter = VisdomLinePlotter(env_name='Age Prediction')
 vis = visdom.Visdom()
-opts = dict(title='Output Histogram', xtickmin=20, xtickmax=40)
-win = None
+train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
+valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
+train_win = None
+valid_win = None
 #hist = vis.histogram(X=torch.ones(1000), env='Age Prediction', opts=dict(title='Output Histogram'))
 
 if torch.cuda.is_available():
@@ -193,9 +202,8 @@ for epoch in range(n_epochs):
     plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(outs))
     plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(outs)/len(outs))
 
-    #vis.histogram(train_outs, win=hist)
-    win = vis.histogram(train_outs, win=win, opts=opts, env='Age Prediction')
-    #vis.histogram(train_outs, win=hist, update=None)
+    train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
+    valid_win = vis.histogram(outs, win=valid_win, opts=valid_opts, env='Age Prediction')
 
     print(epoch)
 
