@@ -11,6 +11,7 @@ from glob import glob
 import visdom
 from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
+from scipy.stats import pearsonr
 
 def MSE(output, target):
     criterion = nn.MSELoss()
@@ -121,8 +122,14 @@ if args.vis_mode:
     vis = visdom.Visdom()
     train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
     valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
+    truth_opts = dict(title='Truth Histogram', xtickmin=20, xtickmax=40)
     train_win = None
     valid_win = None
+    truth_win = None
+    train_scatter_win = None
+    valid_scatter_win = None
+    train_image = None
+    valid_image = None
 
 # Choosing a device (CPU vs. GPU)
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -134,7 +141,7 @@ model.to(device)
 
 # Initialising the optimiser/scheduler
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=10)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=15)
 
 # Create the dataset
 whole_dataset = CustomDataset('./84x84_dataset')
@@ -153,6 +160,7 @@ for epoch in range(args.epochs):
     train_loss = 0
     train_count = 0
     train_outs = []
+    train_truths = []
     for data in trainloader:
         # Send data to device
         data = data.to(device)
@@ -172,14 +180,17 @@ for epoch in range(args.epochs):
 
         # Store output/metrics
         train_outs += list(out.cpu().detach().numpy().flatten())
+        train_truths += list(data.y.cpu().detach().numpy())
         train_loss += loss.item() 
         train_count += 1
+    train_im = data.x.cpu().detach().numpy()
 
     # Validation
     model.eval()
     valid_loss = 0
     valid_count = 0
     valid_outs = []
+    valid_truths = []
     with torch.no_grad():
         for data in validloader:
             # Send data to device
@@ -193,12 +204,17 @@ for epoch in range(args.epochs):
 
             # Store output/metrics
             valid_outs += list(out.cpu().numpy().flatten())
+            valid_truths += list(data.y.cpu().detach().numpy())
             valid_loss += loss.item()
             valid_count += 1
+    valid_im = data.x.cpu().detach().numpy()
 
     # Step the scheduler and print the current LR
     scheduler.step(valid_loss)
     print('Current learning rate: %f' % (optimizer.param_groups[0]['lr']))
+
+    train_r, _ = pearsonr(train_outs, train_truths)
+    valid_r, _ = pearsonr(valid_outs, valid_truths)
     
     # Plotting
     if args.vis_mode:
@@ -217,12 +233,21 @@ for epoch in range(args.epochs):
         # Plot the histograms
         train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
         valid_win = vis.histogram(valid_outs, win=valid_win, opts=valid_opts, env='Age Prediction')
+        truth_win = vis.histogram(train_truths + valid_truths, win=truth_win, opts=truth_opts, env='Age Prediction')
+
+        # Plot the correlation coefficient
+        train_scatter_win = vis.scatter(X=np.stack([train_outs, train_truths],axis=1), win=train_scatter_win, opts=dict(markersize=5, title=f"Train Corr: {train_r:.2f}"), env='Age Prediction')
+        valid_scatter_win = vis.scatter(X=np.stack([valid_outs, valid_truths],axis=1), win=valid_scatter_win, opts=dict(markersize=5, title=f"Valid Corr: {valid_r:.2f}"), env='Age Prediction')
+
+        # Show an example
+        train_image = vis.image(train_im, opts=dict(title="Train Image"), env='Age Prediction', win=train_image)
+        valid_image = vis.image(valid_im, opts=dict(title="Valid Image"), env='Age Prediction', win=valid_image)
 
     # Update metrics
     valid_losses.append(valid_loss/valid_count)
     train_losses.append(train_loss/train_count)
-    valid_stats.append([min(valid_outs), max(valid_outs), sum(valid_outs)/len(valid_outs)])
-    train_stats.append([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs)])
+    valid_stats.append([min(valid_outs), max(valid_outs), sum(valid_outs)/len(valid_outs), valid_r])
+    train_stats.append([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), train_r])
 
     # Print the current epoch
     print(epoch)
