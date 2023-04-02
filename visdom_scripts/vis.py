@@ -8,13 +8,14 @@ class VisdomLinePlotter(object):
         self.env = env_name
         self.plots = {}
     
-    def plot(self, y_var_name, split_name, title_name, x, y, x_var_name='Epochs'):
+    def plot(self, y_var_name, split_name, title_name, x, y, x_var_name='Epochs', yaxis_type='log'):
         if y_var_name not in self.plots:
             options = {
                 'legend': [split_name],
                 'title': title_name,
                 'xlabel': x_var_name,
-                'ylabel': y_var_name
+                'ylabel': y_var_name,
+                'ytype': yaxis_type,
             }
             self.plots[y_var_name] = self.viz.line(X=np.array([x,x]), Y=np.array([y,y]), env=self.env, opts=options)
         else:
