@@ -6,12 +6,13 @@ from torch_geometric.data import Data
 import torch.nn as nn
 from torch_geometric.nn import GATConv, global_add_pool
 from torch_geometric.loader import DataLoader
-from torch.utils.data import random_split
+from torch.utils.data import random_split, Subset
 from glob import glob
 import visdom
 from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
+from sklearn.model_selection import KFold
 
 # Loss function
 def MSE(output, target):
@@ -53,6 +54,12 @@ class CustomDataset(torch.utils.data.Dataset):
             node_features = np.load(dataset_dir + '/node_features/' + subject + '.npy')
             edge_index = np.load(dataset_dir + '/edge_index/' + subject + '.npy')
             label = self.labels[subject]
+
+            # standardise each edge feature into mean 0, stdev 1
+            #for i in range(edge_features.shape[-1]):
+            #    edge_features[:,i] = (edge_features[:,i] - np.mean(edge_features[:,i])) / np.std(edge_features[:,i])
+            # standardise node features into mean 0, stdev 1
+            #node_features = node_features - np.mean(node_features) / np.std(node_features)
 
             # normalise each edge feature into range [0,1]
             for i in range(edge_features.shape[-1]):
@@ -141,161 +148,224 @@ parser.add_argument("-e", "--epochs", help="Number of epochs.", default=100, typ
 parser.add_argument("-lr", "--learning_rate", help="Learning rate.", default=0.001, type=float)
 parser.add_argument("-u", "--hidden_units", help="Hidden units.", default=32, type=int)
 parser.add_argument("-d", "--depth", help="Num conv. layers in the network.", default=2, type=int)
-parser.add_argument("-t", "--train_split", help="What fraction of data to use as training set? e.g. 0.9.", default=0.9, type=float)
 parser.add_argument("-vis", "--vis_mode", help="Presence of this flag enables plotting/visualisation of results.", action='store_true')
+parser.add_argument("-s", "--save_name", help="Folder in which to save all results to.", type=str)
 args = parser.parse_args()
+
+# Create the results directory
+while os.path.exists('./results/' + args.save_name):
+    args.save_name = input("Already exists. Enter new save name:")
+os.mkdir('./results/' + args.save_name)
 
 # Print all specified arguments
 for arg in vars(args):
     print(f"{arg}: {getattr(args, arg)}")
 args_string = '_'.join([str(getattr(args, arg)) for arg in vars(args)]) # create string for a unique ID
 
-# Visdom plotting initialisation
-if args.vis_mode:
-    loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
-    score_plotter = VisdomLinePlotter(env_name='Age Prediction')
-    vis = visdom.Visdom()
-    train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
-    valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
-    truth_opts = dict(title='Truth Histogram', xtickmin=20, xtickmax=40)
-    train_win = None
-    valid_win = None
-    truth_win = None
-    train_scatter_win = None
-    valid_scatter_win = None
-    train_image = None
-    valid_image = None
-
 # Choosing a device (CPU vs. GPU)
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 print("Training on: ", device)
 
-# Initialising model
-model = CustomModel(num_features=84, hidden_size=args.hidden_units)
-model.to(device)
-print(model)
-
-# Initialising the optimiser/scheduler
-optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=15)
-
 # Create the dataset
 whole_dataset = CustomDataset('./84x84_dataset')
-train_size = int(args.train_split * len(whole_dataset))
-valid_size = len(whole_dataset) - train_size
-train_dataset, valid_dataset = random_split(whole_dataset, [train_size, valid_size])
-trainloader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size, drop_last=True)
-validloader = DataLoader(valid_dataset, shuffle=True, batch_size=args.batch_size, drop_last=True)
 
-# Main training/validation loop
-valid_losses, train_losses = [], []
-valid_stats, train_stats = [], []
-for epoch in range(args.epochs):
-    # Training
-    model.train()
-    train_loss = 0
-    train_count = 0
-    train_outs = []
-    train_truths = []
-    for data in trainloader:
-        # Send data to device
-        data = data.to(device)
+"""
+shuffle=True will shuffle the items in the dataset before splitting them into 5 folds
+e.g. if you set it to false, and you have 10 items, you will always get:
+            train subjects      valid subjects
+    fold 1: [2,3,4,5,6,7,8,9]   [0,1]
+    fold 2: [0,1,4,5,6,7,8,9]   [2,3]
+    fold 3: [0,1,2,3,6,7,8,9]   [4,5]
+    ...
+    ...
+if you set it to true, the valid subjects will not be in that order.
 
-        # Reset optimizer
-        optimizer.zero_grad()
+Since we've set a random_state (seed), we'll get the same order every time we run,
+but it's still good in principle to use the shuffle flag
+"""
+kf = KFold(n_splits=5, shuffle=True, random_state=666)
 
-        # Feed into model
-        out = model(data)
+# fold      = integer fold number (starting at 0)
+# train_idx = list of indexes for items in the training fold
+# val_idx   = list of indexes for items in the validation fold
+for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
+    train_dataset = Subset(whole_dataset, train_idx)
+    valid_dataset = Subset(whole_dataset, val_idx)
 
-        # Compute and backprop the loss
-        loss = MSE(out, torch.unsqueeze(data.y.float(),1))
-        loss.backward()
+    trainloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    validloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
-        # Update the parameters
-        optimizer.step()
+    # Visdom plotting initialisation
+    if args.vis_mode:
+        loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
+        score_plotter = VisdomLinePlotter(env_name='Age Prediction')
+        vis = visdom.Visdom()
+        train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
+        valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
+        truth_opts = dict(title='Truth Histogram', xtickmin=20, xtickmax=40)
+        train_win = None
+        valid_win = None
+        truth_win = None
+        train_scatter_win = None
+        valid_scatter_win = None
+        train_image = None
+        valid_image = None
 
-        # Store output/metrics
-        train_outs += list(out.cpu().detach().numpy().flatten())
-        train_truths += list(data.y.cpu().detach().numpy())
-        train_loss += loss.item() 
-        train_count += 1
-    train_node_features = data.x[:84].cpu().detach().numpy()
+    # Initialising model
+    model = CustomModel(num_features=84, hidden_size=args.hidden_units)
+    model.to(device)
+    print(model)
 
-    # Validation
-    model.eval()
-    valid_loss = 0
-    valid_count = 0
-    valid_outs = []
-    valid_truths = []
-    with torch.no_grad():
-        for data in validloader:
+    # Initialising the optimiser/scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=15)
+
+    # Main training/validation loop for the current fold of cross-validation
+    valid_losses, train_losses = [], []
+    valid_stats, train_stats = [], []
+    best_valid_loss = None
+    for epoch in range(args.epochs):
+        # Training
+        model.train()
+        train_loss = 0
+        train_count = 0
+        train_outs = []
+        train_truths = []
+        for data in trainloader:
             # Send data to device
             data = data.to(device)
+
+            # Reset optimizer
+            optimizer.zero_grad()
 
             # Feed into model
             out = model(data)
 
-            # Calculate loss
+            # Compute and backprop the loss
             loss = MSE(out, torch.unsqueeze(data.y.float(),1))
+            loss.backward()
+
+            # Update the parameters
+            optimizer.step()
 
             # Store output/metrics
-            valid_outs += list(out.cpu().numpy().flatten())
-            valid_truths += list(data.y.cpu().detach().numpy())
-            valid_loss += loss.item()
-            valid_count += 1
-    valid_node_features = data.x[:84].cpu().detach().numpy()
+            train_outs += list(out.cpu().detach().numpy().flatten())
+            train_truths += list(data.y.cpu().detach().numpy())
+            train_loss += loss.item() 
+            train_count += 1
+        train_node_features = data.x[:84].cpu().detach().numpy()
 
-    # Step the scheduler and print the current LR
-    scheduler.step(valid_loss)
-    print('Current learning rate: %f' % (optimizer.param_groups[0]['lr']))
+        # Validation
+        model.eval()
+        valid_loss = 0
+        valid_count = 0
+        valid_outs = []
+        valid_truths = []
+        with torch.no_grad():
+            for data in validloader:
+                # Send data to device
+                data = data.to(device)
 
-    train_r, _ = pearsonr(train_outs, train_truths)
-    valid_r, _ = pearsonr(valid_outs, valid_truths)
-    
-    train_mae = np.mean(np.abs(np.array(train_outs) - np.array(train_truths)))
-    valid_mae = np.mean(np.abs(np.array(valid_outs) - np.array(valid_truths)))
-    
-    # Plotting
-    if args.vis_mode:
-        # Plot the losses
-        loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count, yaxis_type='log')
-        loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count, yaxis_type='log')
-        loss_plotter.plot('score', 'valid MAE', 'Metric Curves', epoch, valid_mae, yaxis_type='log')
-        loss_plotter.plot('score', 'train MAE', 'Metric Curves', epoch, train_mae, yaxis_type='log')
+                # Feed into model
+                out = model(data)
 
-        # Plot the metrics
-        score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs), yaxis_type='linear')
-        score_plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs), yaxis_type='linear')
-        score_plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs), yaxis_type='linear')
-        score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(valid_outs), yaxis_type='linear')
-        score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(valid_outs), yaxis_type='linear')
-        score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(valid_outs)/len(valid_outs), yaxis_type='linear')
+                # Calculate loss
+                loss = MSE(out, torch.unsqueeze(data.y.float(),1))
 
-        # Plot the histograms
-        train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
-        valid_win = vis.histogram(valid_outs, win=valid_win, opts=valid_opts, env='Age Prediction')
-        truth_win = vis.histogram(train_truths + valid_truths, win=truth_win, opts=truth_opts, env='Age Prediction')
+                # Store output/metrics
+                valid_outs += list(out.cpu().numpy().flatten())
+                valid_truths += list(data.y.cpu().detach().numpy())
+                valid_loss += loss.item()
+                valid_count += 1
+        valid_node_features = data.x[:84].cpu().detach().numpy()
 
-        # Plot the correlation coefficient
-        train_scatter_win = vis.scatter(X=np.stack([train_outs, train_truths],axis=1), win=train_scatter_win, opts=dict(markersize=5, title=f"Train Corr: {train_r:.2f}"), env='Age Prediction')
-        valid_scatter_win = vis.scatter(X=np.stack([valid_outs, valid_truths],axis=1), win=valid_scatter_win, opts=dict(markersize=5, title=f"Valid Corr: {valid_r:.2f}"), env='Age Prediction')
+        # Step the scheduler and print the current LR
+        scheduler.step(valid_loss)
+        print('Current learning rate: %f' % (optimizer.param_groups[0]['lr']))
 
-        # Show an example
-        train_image = vis.image(train_node_features, opts=dict(title="Train Node Features", width=300,height=300), env='Age Prediction', win=train_image)
-        valid_image = vis.image(valid_node_features, opts=dict(title="Valid Node Features", width=300, height=300), env='Age Prediction', win=valid_image)
+        train_r, _ = pearsonr(train_outs, train_truths)
+        valid_r, _ = pearsonr(valid_outs, valid_truths)
+        
+        train_mae = np.mean(np.abs(np.array(train_outs) - np.array(train_truths)))
+        valid_mae = np.mean(np.abs(np.array(valid_outs) - np.array(valid_truths)))
+        
+        # Plotting
+        if args.vis_mode:
+            # Plot the losses
+            loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count, yaxis_type='log')
+            loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count, yaxis_type='log')
+            loss_plotter.plot('score', 'valid MAE', 'Metric Curves', epoch, valid_mae, yaxis_type='log')
+            loss_plotter.plot('score', 'train MAE', 'Metric Curves', epoch, train_mae, yaxis_type='log')
 
-    # Update metrics
-    valid_losses.append(valid_loss/valid_count)
-    train_losses.append(train_loss/train_count)
-    valid_stats.append([min(valid_outs), max(valid_outs), sum(valid_outs)/len(valid_outs), valid_r])
-    train_stats.append([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), train_r])
+            # Plot the metrics
+            score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'train max', 'Metric Curves', epoch, max(train_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'train mean', 'Metric Curves', epoch, sum(train_outs)/len(train_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(valid_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(valid_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(valid_outs)/len(valid_outs), yaxis_type='linear')
 
-    # Print the current epoch
-    print(epoch)
+            # Plot the histograms
+            train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
+            valid_win = vis.histogram(valid_outs, win=valid_win, opts=valid_opts, env='Age Prediction')
+            truth_win = vis.histogram(train_truths + valid_truths, win=truth_win, opts=truth_opts, env='Age Prediction')
 
-# Save results
-save_string = args_string + '.npy'
-np.save('./logs/valid_loss_' + save_string, np.array(valid_losses))
-np.save('./logs/train_loss_' + save_string, np.array(train_losses))
-np.save('./logs/valid_stats_' + save_string, np.array(valid_stats))
-np.save('./logs/train_stats_' + save_string, np.array(train_stats))
+            # Plot the correlation coefficient
+            train_scatter_win = vis.scatter(X=np.stack([train_outs, train_truths],axis=1), win=train_scatter_win, opts=dict(markersize=5, title=f"Train Corr: {train_r:.2f}"), env='Age Prediction')
+            valid_scatter_win = vis.scatter(X=np.stack([valid_outs, valid_truths],axis=1), win=valid_scatter_win, opts=dict(markersize=5, title=f"Valid Corr: {valid_r:.2f}"), env='Age Prediction')
+
+            # Show an example
+            train_image = vis.image(train_node_features, opts=dict(title="Train Node Features", width=300,height=300), env='Age Prediction', win=train_image)
+            valid_image = vis.image(valid_node_features, opts=dict(title="Valid Node Features", width=300, height=300), env='Age Prediction', win=valid_image)
+
+        # Update metrics
+        valid_losses.append(valid_loss/valid_count)
+        train_losses.append(train_loss/train_count)
+        valid_stats.append([min(valid_outs), max(valid_outs), sum(valid_outs)/len(valid_outs), valid_r])
+        train_stats.append([min(train_outs), max(train_outs), sum(train_outs)/len(train_outs), train_r])
+
+        # Print the current epoch
+        print(epoch)
+
+        # Save the current model if it has the lowest validation loss
+        update_loss = False
+        if best_valid_loss is None:
+            update_loss = True
+        elif valid_loss/valid_count < best_valid_loss:
+            update_loss = True
+        if update_loss:
+            best_valid_loss = valid_loss / valid_count
+
+            # Save the model
+            save_object = {
+                # state dicts
+                'model_state_dict': model.state_dict(),
+                'optimizer':optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+
+                # useful info
+                'training_epoch': epoch,
+                'total_epochs': args.epochs,
+                'batch_size': args.batch_size,
+                'lr': args.learning_rate,
+                'hidden_units': args.hidden_units,
+                'depth': args.depth,
+                'vis_mode': args.vis_mode,
+                'save_name': args.save_name,
+
+                # cross-val info
+                'fold': fold,
+                'train_idx': train_idx,
+                'val_idx': val_idx,
+
+                # metric info
+                'train_outs': train_outs,
+                'valid_outs': valid_outs,
+                'train_r': train_r,
+                'valid_r': valid_r,
+                'train_truths': train_truths,
+                'valid_truths': valid_truths,
+                'valid_losses': valid_losses,
+                'train_losses': train_losses,
+            }
+            torch.save(save_object, './results/' + args.save_name + '/fold_' + str(fold) + '_best_model_checkpoint.pth')
