@@ -223,11 +223,16 @@ for epoch in range(args.epochs):
     train_r, _ = pearsonr(train_outs, train_truths)
     valid_r, _ = pearsonr(valid_outs, valid_truths)
     
+    train_mae = np.mean(np.abs(np.array(train_outs) - np.array(train_truths)))
+    valid_mae = np.mean(np.abs(np.array(valid_outs) - np.array(valid_truths)))
+    
     # Plotting
     if args.vis_mode:
         # Plot the losses
         loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count, yaxis_type='log')
         loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count, yaxis_type='log')
+        loss_plotter.plot('score', 'valid MAE', 'Metric Curves', epoch, valid_mae, yaxis_type='log')
+        loss_plotter.plot('score', 'train MAE', 'Metric Curves', epoch, train_mae, yaxis_type='log')
 
         # Plot the metrics
         score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs), yaxis_type='linear')
