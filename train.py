@@ -12,46 +12,8 @@ import visdom
 from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
-import networkx as nx
-import matplotlib.pyplot as plt
-from PIL import Image
-import io
 
-# From GPT-4:
-def visualize_graph(node_connections, edge_values):
-    # Check if input shapes are correct
-    assert len(node_connections) == len(edge_values), "Input lengths mismatch"
-    assert len(node_connections[0]) == 2, "Node connections shape mismatch"
-
-    # Create an empty graph
-    G = nx.Graph()
-
-    # Add edges with their corresponding values
-    for i, (node1, node2) in enumerate(node_connections):
-        G.add_edge(node1, node2, value=edge_values[i])
-
-    # Draw the graph
-    pos = nx.spring_layout(G, seed=42, k=0.5)  # Increase 'k' for more separation between nodes
-    plt.figure(figsize=(15, 15))  # Adjust the figure size
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=500, font_size=10, linewidths=1.0, edgecolors='black')
-    labels = nx.get_edge_attributes(G, 'value')
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=labels, font_size=10)
-
-    # Save the figure in a BytesIO object
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150)  # Increase dpi for higher resolution images
-    buf.seek(0)
-
-    # Convert the BytesIO object to a NumPy array
-    image = Image.open(buf)
-    image_np = np.array(image)
-
-    # Close the buffer and clear the figure
-    buf.close()
-    plt.clf()
-
-    return np.swapaxes(np.swapaxes(image_np[:,:,:3], 0,2), 1,2)
-
+# Loss function
 def MSE(output, target):
     criterion = nn.MSELoss()
     return criterion(output,target)
@@ -66,12 +28,18 @@ def get_labels_mapping(f):
             result[row[0]] = int(row[1])
     return result
 
-"""
-def aug(x):
-    x.x += np.float32(np.random.rand(x.x.shape[0], x.x.shape[1]) * 100)
-    x.edge_attr += np.float32(np.random.rand(x.edge_attr.shape[0], x.edge_attr.shape[1]) * 100)
-    return x
-"""
+def aug(d):
+    c = d.clone()
+    c.x += torch.rand(c.x.shape[0], c.x.shape[1]) * 0.2
+    c.edge_attr += torch.rand(c.edge_attr.shape[0], c.edge_attr.shape[1]) * 0.2
+
+    c.x = (c.x - torch.min(c.x)) / (torch.max(c.x) - torch.min(c.x))
+    c.edge_attr = (c.edge_attr - torch.min(c.edge_attr)) / (torch.max(c.edge_attr) - torch.min(c.edge_attr))
+    #c.x += np.float32(np.random.rand(c.x.shape[0], c.x.shape[1]))
+    #d.x = (d.x - np.min(d.x)) / (np.max(d.x) - np.min(d.x))
+    #d.edge_attr += np.float32(np.random.rand(d.edge_attr.shape[0], d.edge_attr.shape[1])) 
+
+    return c
 
 class CustomDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_dir='/Users/aritchetchenian/Desktop/graph_cnn'):
@@ -96,8 +64,8 @@ class CustomDataset(torch.utils.data.Dataset):
             self.subjects.append(Data(x=torch.from_numpy(node_features).float(), edge_index=torch.from_numpy(edge_index).long(), edge_attr=torch.from_numpy(edge_features).float(), y=label))
 
     def __getitem__(self, idx):
-        #return aug(self.subjects[idx])
         return self.subjects[idx]
+        #return aug(self.subjects[idx])
 
     def __len__(self):
         return len(self.subjects)
@@ -169,8 +137,6 @@ if args.vis_mode:
     valid_scatter_win = None
     train_image = None
     valid_image = None
-    train_graph_image = None
-    valid_graph_image = None
 
 # Choosing a device (CPU vs. GPU)
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -225,7 +191,6 @@ for epoch in range(args.epochs):
         train_loss += loss.item() 
         train_count += 1
     train_node_features = data.x[:84].cpu().detach().numpy()
-    #train_graph_im = visualize_graph(np.reshape(data.edge_index.cpu().detach().numpy(), (-1,2)), data.edge_attr.cpu().detach().numpy()[:,0])
 
     # Validation
     model.eval()
@@ -250,7 +215,6 @@ for epoch in range(args.epochs):
             valid_loss += loss.item()
             valid_count += 1
     valid_node_features = data.x[:84].cpu().detach().numpy()
-    #valid_graph_im = visualize_graph(np.reshape(data.edge_index.cpu().detach().numpy(), (-1,2)), data.edge_attr.cpu().detach().numpy()[:,0])
 
     # Step the scheduler and print the current LR
     scheduler.step(valid_loss)
@@ -283,11 +247,8 @@ for epoch in range(args.epochs):
         valid_scatter_win = vis.scatter(X=np.stack([valid_outs, valid_truths],axis=1), win=valid_scatter_win, opts=dict(markersize=5, title=f"Valid Corr: {valid_r:.2f}"), env='Age Prediction')
 
         # Show an example
-        print(train_node_features.shape)
-        train_image = vis.image(train_node_features, opts=dict(title="Train Node Features"), env='Age Prediction', win=train_image)
-        valid_image = vis.image(valid_node_features, opts=dict(title="Valid Node Features"), env='Age Prediction', win=valid_image)
-        #train_graph_image = vis.image(train_graph_im, opts=dict(title="Train Graph", width=400, height=400), env='Age Prediction', win=train_graph_image)
-        #valid_graph_image = vis.image(valid_graph_im, opts=dict(title="Valid Graph", width=400, height=400), env='Age Prediction', win=valid_graph_image)
+        train_image = vis.image(train_node_features, opts=dict(title="Train Node Features", width=300,height=300), env='Age Prediction', win=train_image)
+        valid_image = vis.image(valid_node_features, opts=dict(title="Valid Node Features", width=300, height=300), env='Age Prediction', win=valid_image)
 
     # Update metrics
     valid_losses.append(valid_loss/valid_count)
