@@ -13,6 +13,11 @@ from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
 
+import torch
+from torch_geometric.data import Data
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import degree
+
 # Loss function
 def MSE(output, target):
     criterion = nn.MSELoss()
@@ -77,34 +82,62 @@ class CustomModel(torch.nn.Module):
         self.num_features = num_features
         self.target_size = target_size
         self.num_edge_features = num_edge_features
-        self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(args.depth-1)])
         self.linear = nn.Linear(self.hidden_size, self.target_size)
         self.dropout = nn.Dropout(p=0.5)
         self.relu = nn.ReLU()
 
-    # x          = num nodes x num_node_features (i.e. list of all node features)
-    # edge_index = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, put both e.g. [0,1] and [1,0])
-    # edge_attr  = num_edges x num_edge_features
+        # Dynamic number of GATConv layers
+        self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] 
+            + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(args.depth-1)])
+
+    """
+    - node_features = num nodes x num_node_features (i.e. list of all node features)
+    - edge_index    = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, 
+                      put both e.g. [0,1] and [1,0])
+    - edge_attr     = num_edges x num_edge_features
+    """
     def forward(self, data):
+        # Get the data from the Data object
         node_features, edge_index, edge_features = data.x, data.edge_index, data.edge_attr
-        x = self.convs[0](node_features, edge_index, edge_attr=edge_features) # adding edge features here!
+
+        # Feed through first GATConv layer
+        x = self.convs[0](node_features, edge_index, edge_attr=edge_features)
         x = self.relu(x)
         x = self.dropout(x)
+
+        # Feed through any additional GATConv layers
         for conv in self.convs[1:-1]:
             x = conv(x, edge_index, edge_attr=edge_features) # adding edge features here!
             x = self.relu(x)
             x = self.dropout(x)
+
+        # Feed through the final layer separately from the loop
+        # so that we can exclude ReLU and dropout
         x = self.convs[-1](x, edge_index, edge_attr=edge_features)
 
+
+        """
+        Compile all the features into a single feature for classification via 
+        Sum all node hidden features to produce a single hidden feature for the entire graph
+          - Before 'global_add_pool': num_nodes * batch_size x hidden_features
+          - After 'global_add_pool':  batch_size x hidden_features
+
+        The 'batch' variable is just a list of batch ids for every node. It is necessary because
+        torch geometric concats all node features from all graphs in the current batch into a long
+        feature vector, so we need to tell the global_add_pool function which nodes belong to which
+        batches.
+          - e.g. batch = [0,0,0,...,0,1,1,...,1] with 84 0s and 84 1s would assign the first 84
+            hidden features to the 1st batch, then the second 84 hidden features to the 2nd batch
+        """
         batch = torch.repeat_interleave(torch.arange(args.batch_size, device=device), 84)
-        #batch = [[x for i in range(84)] for x in range(hyperparams['batch_size'])]
-        #batch = [j for i in batch for j in i]
-        #x = global_add_pool(x, batch=torch.tensor(batch))
         x = global_add_pool(x, batch=batch)
+            
+        # Feed into a linear layer
         x = self.linear(x)
 
+        # We are predicting age, so output should be positive. Hence, we can just apply a relu to
+        #  make it easier for the network
         return self.relu(x) 
-        #return x
 
 # Define the arguments
 parser = ArgumentParser(description="Arguments for model training.")
@@ -145,6 +178,11 @@ print("Training on: ", device)
 # Initialising model
 model = CustomModel(num_features=84, hidden_size=args.hidden_units)
 model.to(device)
+
+if args.vis_mode:
+    print(model)
+    #data = Data(x=torch.ones(84,84), edge_index=torch.ones(2,4254), edge_attr=torch.ones(4254,2))
+    #geometric_summary(model, data)
 
 # Initialising the optimiser/scheduler
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
