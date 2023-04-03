@@ -65,6 +65,8 @@ class CustomDataset(torch.utils.data.Dataset):
             for i in range(edge_features.shape[-1]):
                 edge_features[:,i] = (edge_features[:,i] - np.min(edge_features[:,i])) / (np.max(edge_features[:,i]) - np.min(edge_features[:,i]))
 
+            #edge_features = np.expand_dims(edge_features[...,0],axis=-1)
+
             # normalise node features into range [0,1]
             node_features = (node_features - np.min(node_features)) / (np.max(node_features) - np.min(node_features))
 
@@ -212,7 +214,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
         valid_image = None
 
     # Initialising model
-    model = CustomModel(num_features=84, hidden_size=args.hidden_units)
+    model = CustomModel(num_features=84, hidden_size=args.hidden_units, num_edge_features=2)
     model.to(device)
     print(model)
 
