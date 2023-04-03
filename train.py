@@ -13,11 +13,6 @@ from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
 
-import torch
-from torch_geometric.data import Data
-from torch_geometric.nn import MessagePassing
-from torch_geometric.utils import degree
-
 # Loss function
 def MSE(output, target):
     criterion = nn.MSELoss()
@@ -178,11 +173,7 @@ print("Training on: ", device)
 # Initialising model
 model = CustomModel(num_features=84, hidden_size=args.hidden_units)
 model.to(device)
-
-if args.vis_mode:
-    print(model)
-    #data = Data(x=torch.ones(84,84), edge_index=torch.ones(2,4254), edge_attr=torch.ones(4254,2))
-    #geometric_summary(model, data)
+print(model)
 
 # Initialising the optimiser/scheduler
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
