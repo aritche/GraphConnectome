@@ -13,12 +13,50 @@ from visdom_scripts.vis import VisdomLinePlotter
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
 from sklearn.model_selection import KFold
+import random
+
+torch.manual_seed(0)
+np.random.seed(0)
+random.seed(0)
 
 # Loss function
 def MSE(output, target):
     criterion = nn.MSELoss()
     return criterion(output,target)
 
+class CombinedLoss(nn.Module):
+    def __init__(self, alpha=0.5):
+        super(CombinedLoss, self).__init__()
+        self.alpha = alpha
+        self.mse_loss = nn.MSELoss()
+
+    #def pearson_corr_coef(self, x, y):
+    #    vx = x - torch.mean(x)
+    #    vy = y - torch.mean(y)
+    #
+    #    corr = torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)))
+    #    return 1 - corr
+
+    def pearson_corr_coef(self, x, y, eps=1e-8):
+        vx = x - torch.mean(x)
+        vy = y - torch.mean(y)
+
+        num = torch.sum(vx * vy)
+        denom = torch.sqrt(torch.sum(vx ** 2) * torch.sum(vy ** 2)) + eps
+        corr = num / denom
+        return 1 - corr
+
+
+    def forward(self, y_pred, y_true):
+        mse_loss = self.mse_loss(y_pred, y_true)
+        pearson_loss = self.pearson_corr_coef(y_pred, y_true)
+        combined_loss = self.alpha * mse_loss + (1 - self.alpha) * pearson_loss
+        return combined_loss
+
+def CustomLoss(output, target):
+	criterion = CombinedLoss()
+	return criterion(output, target)
+ 
 # Return a subject->label mapping
 def get_labels_mapping(f):
     result = {}
@@ -26,7 +64,7 @@ def get_labels_mapping(f):
         reader = csv.reader(csvfile)
         next(reader)
         for row in reader:
-            result[row[0]] = int(row[1])
+            result[row[0]] = float(row[1])
     return result
 
 def aug(d):
@@ -47,7 +85,8 @@ class CustomDataset(torch.utils.data.Dataset):
         self.subjects = [] # store all data here
 
         subject_ids = [os.path.split(x)[-1].split('.')[0] for x in sorted(glob(dataset_dir + '/edge_features/*.npy'))]
-        self.labels = get_labels_mapping(dataset_dir + '/ages.csv')
+        #self.labels = get_labels_mapping(dataset_dir + '/ages.csv')
+        self.labels = get_labels_mapping(dataset_dir + '/pic_vocab_unadj.csv')
 
         for subject in subject_ids:
             edge_features = np.load(dataset_dir + '/edge_features/' + subject + '.npy')
@@ -86,7 +125,6 @@ class CustomModel(torch.nn.Module):
         self.num_features = num_features
         self.target_size = target_size
         self.num_edge_features = num_edge_features
-        self.linear = nn.Linear(self.hidden_size, self.target_size)
         self.dropout = nn.Dropout(p=0.5)
         self.relu = nn.ReLU()
 
@@ -94,6 +132,15 @@ class CustomModel(torch.nn.Module):
         self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] 
             + [GATConv(self.hidden_size, self.hidden_size, edge_dim=self.num_edge_features) for x in range(args.depth-1)])
 
+        self.linear = nn.Linear(self.hidden_size, 1)
+
+        """
+        # Dynamic number of GATConv layers
+        self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] 
+            + [GATConv(self.hidden_size*(2**x), self.hidden_size*(2**(x+1)), edge_dim=self.num_edge_features) for x in range(args.depth-1)])
+
+        self.linear = nn.Linear(self.hidden_size * (2**(args.depth-1)), 1)
+        """
     """
     - node_features = num nodes x num_node_features (i.e. list of all node features)
     - edge_index    = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, 
@@ -202,9 +249,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
         loss_plotter = VisdomLinePlotter(env_name='Age Prediction')
         score_plotter = VisdomLinePlotter(env_name='Age Prediction')
         vis = visdom.Visdom()
-        train_opts = dict(title='Train Histogram', xtickmin=20, xtickmax=40)
-        valid_opts = dict(title='Valid Histogram', xtickmin=20, xtickmax=40)
-        truth_opts = dict(title='Truth Histogram', xtickmin=20, xtickmax=40)
+        train_opts = dict(title='Train Histogram', xtickmin=90, xtickmax=160)
+        valid_opts = dict(title='Valid Histogram', xtickmin=90, xtickmax=160)
+        truth_opts = dict(title='Truth Histogram', xtickmin=90, xtickmax=160)
         train_win = None
         valid_win = None
         truth_win = None
@@ -245,6 +292,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
 
             # Compute and backprop the loss
             loss = MSE(out, torch.unsqueeze(data.y.float(),1))
+            #loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
             loss.backward()
 
             # Update the parameters
@@ -273,6 +321,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
 
                 # Calculate loss
                 loss = MSE(out, torch.unsqueeze(data.y.float(),1))
+                #loss = CustomLoss(out, torch.unsqueeze(data.y.float(),1))
 
                 # Store output/metrics
                 valid_outs += list(out.cpu().numpy().flatten())
