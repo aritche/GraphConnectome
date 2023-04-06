@@ -1,5 +1,7 @@
 from glob import glob
 import numpy as np
+import os
+import sys
 
 # Get a mapping of GM region name->IDs for all GM regions, but merge regions prefixed by WM and CTX
 def get_region_names(ids_fn):
@@ -36,6 +38,9 @@ def remove_regions(x, regions, allowed_regions_set):
 
     return x 
 
+
+save_suffix = sys.argv[1]
+
 regions = get_region_names('GM_ids.txt')
 allowed_regions = get_mrtrix_regions('mrtrix_regions.txt')
 
@@ -43,14 +48,21 @@ regions_set = set(regions)
 allowed_regions_set = set(allowed_regions)
 remove_regions_set = regions_set - allowed_regions_set
 
+os.mkdir('./84x84_connectomes_' + save_suffix)
+os.mkdir('./84x84_dataset_' + save_suffix)
+os.mkdir('./84x84_dataset_' + save_suffix + '/node_features')
+os.mkdir('./84x84_dataset_' + save_suffix + '/edge_features')
+os.mkdir('./84x84_dataset_' + save_suffix + '/edge_index')
+
 i = 0
 for fn in glob('./111x111_connectomes/*.npy'):
     # Only retain GM regions
     x = np.load(fn)
     x = remove_regions(x, regions, allowed_regions_set)
 
+
     # Save intermediate result
-    out_fn = './84x84_connectomes/' + fn.split('/')[-1]
+    out_fn = './84x84_connectomes_'+save_suffix+'/' + fn.split('/')[-1]
     np.save(out_fn, x)
 
     # Convert to edge indexes, edge features, node features
@@ -65,14 +77,26 @@ for fn in glob('./111x111_connectomes/*.npy'):
         no_self_edges[row][row][0] = 0
         no_self_edges[row][row][1] = 0
 
+    sub_a = no_self_edges[:,:,0]
+    sub_b = no_self_edges[:,:,1]
+
+    # remove edges below a certain percentile
+    #p = np.percentile(sub_a, 90)
+    #sub_a[sub_a<p] = 0
+
+    no_self_edges = np.stack([sub_a,sub_b], axis=-1)
+    x = no_self_edges.copy()
+    vals = no_self_edges[:,:,0].flatten()
+    print("Total SL: %d" % (np.count_nonzero(vals)))
+
     for row in range(len(x)):
         #node_features.append([0]) # constant node features
         node_features.append(no_self_edges[row,:,0]) # SL profile as node features
         for col in range(len(x[row])):
             if row == col: # exclude self-edges
                 continue
-            # if at least 1 feature is non-zero, count it
-            if x[row][col][0] != 0 or x[row][col][1] != 0:
+            # count an edge if it is non-zero after any edge thresholding
+            if x[row][col][0] != 0:
                 rows.append(row)
                 cols.append(col)
                 edge_features.append(x[row][col])
@@ -83,9 +107,9 @@ for fn in glob('./111x111_connectomes/*.npy'):
 
     subject_id = fn.split('/')[-1].split('.')[0]
 
-    np.save('./84x84_dataset/node_features/' + subject_id + '.npy', node_features)
-    np.save('./84x84_dataset/edge_features/' + subject_id + '.npy', edge_features)
-    np.save('./84x84_dataset/edge_index/' + subject_id + '.npy', edge_index)
+    np.save('./84x84_dataset_'+save_suffix+'/node_features/' + subject_id + '.npy', node_features)
+    np.save('./84x84_dataset_'+save_suffix+'/edge_features/' + subject_id + '.npy', edge_features)
+    np.save('./84x84_dataset_'+save_suffix+'/edge_index/' + subject_id + '.npy', edge_index)
 
     print(i)
     i += 1
