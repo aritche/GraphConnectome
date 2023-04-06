@@ -19,23 +19,17 @@ torch.manual_seed(0)
 np.random.seed(0)
 random.seed(0)
 
-# Loss function
+# MSE Loss function
 def MSE(output, target):
     criterion = nn.MSELoss()
     return criterion(output,target)
 
+# A loss function that combines MSE and Pearson correlation coefficient (R)
 class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.5):
+    def __init__(self, alpha=0.05):
         super(CombinedLoss, self).__init__()
         self.alpha = alpha
         self.mse_loss = nn.MSELoss()
-
-    #def pearson_corr_coef(self, x, y):
-    #    vx = x - torch.mean(x)
-    #    vy = y - torch.mean(y)
-    #
-    #    corr = torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)))
-    #    return 1 - corr
 
     def pearson_corr_coef(self, x, y, eps=1e-8):
         vx = x - torch.mean(x)
@@ -46,18 +40,17 @@ class CombinedLoss(nn.Module):
         corr = num / denom
         return 1 - corr
 
-
     def forward(self, y_pred, y_true):
         mse_loss = self.mse_loss(y_pred, y_true)
         pearson_loss = self.pearson_corr_coef(y_pred, y_true)
         combined_loss = self.alpha * mse_loss + (1 - self.alpha) * pearson_loss
         return combined_loss
 
-def CustomLoss(output, target):
-	criterion = CombinedLoss()
-	return criterion(output, target)
+def MSE_corr_loss(output, target):
+    criterion = CombinedLoss()
+    return criterion(output, target)
  
-# Return a subject->label mapping
+# Return a subject->label mapping for float labels
 def get_labels_mapping(f):
     result = {}
     with open(f, newline='') as csvfile:
@@ -67,16 +60,29 @@ def get_labels_mapping(f):
             result[row[0]] = float(row[1])
     return result
 
+# Return a subject->label mapping for string labels 
+def get_gender_mapping(f):
+    result = {}
+    with open(f, newline='') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)
+        for row in reader:
+            if row[1].lower() == 'm':
+                result[row[0]] = 0
+            else:
+                result[row[0]] = 1
+    return result
+
+# Basic data augmentation that adds uniform noise to node and edge features
 def aug(d):
+    # Add noise
     c = d.clone()
     c.x += torch.rand(c.x.shape[0], c.x.shape[1]) * 0.2
     c.edge_attr += torch.rand(c.edge_attr.shape[0], c.edge_attr.shape[1]) * 0.2
 
+    # Re-normalise
     c.x = (c.x - torch.min(c.x)) / (torch.max(c.x) - torch.min(c.x))
     c.edge_attr = (c.edge_attr - torch.min(c.edge_attr)) / (torch.max(c.edge_attr) - torch.min(c.edge_attr))
-    #c.x += np.float32(np.random.rand(c.x.shape[0], c.x.shape[1]))
-    #d.x = (d.x - np.min(d.x)) / (np.max(d.x) - np.min(d.x))
-    #d.edge_attr += np.float32(np.random.rand(d.edge_attr.shape[0], d.edge_attr.shape[1])) 
 
     return c
 
@@ -85,7 +91,6 @@ class CustomDataset(torch.utils.data.Dataset):
         self.subjects = [] # store all data here
 
         subject_ids = [os.path.split(x)[-1].split('.')[0] for x in sorted(glob(dataset_dir + '/edge_features/*.npy'))]
-        #self.labels = get_labels_mapping(dataset_dir + '/ages.csv')
         self.labels = get_labels_mapping(dataset_dir + '/pic_vocab_unadj.csv')
 
         for subject in subject_ids:
@@ -94,26 +99,27 @@ class CustomDataset(torch.utils.data.Dataset):
             edge_index = np.load(dataset_dir + '/edge_index/' + subject + '.npy')
             label = self.labels[subject]
 
-            # standardise each edge feature into mean 0, stdev 1
-            #for i in range(edge_features.shape[-1]):
-            #    edge_features[:,i] = (edge_features[:,i] - np.mean(edge_features[:,i])) / np.std(edge_features[:,i])
-            # standardise node features into mean 0, stdev 1
-            #node_features = node_features - np.mean(node_features) / np.std(node_features)
-
-            # normalise each edge feature into range [0,1]
+            # Normalise edge features into range [0,1]
             for i in range(edge_features.shape[-1]):
                 edge_features[:,i] = (edge_features[:,i] - np.min(edge_features[:,i])) / (np.max(edge_features[:,i]) - np.min(edge_features[:,i]))
 
-            #edge_features = np.expand_dims(edge_features[...,0],axis=-1)
+            # Extract a single node feature
+            #node_features = np.reshape(np.count_nonzero(node_features,axis=1),(-1,1))
 
-            # normalise node features into range [0,1]
+            # Normalise node features into range [0,1]
             node_features = (node_features - np.min(node_features)) / (np.max(node_features) - np.min(node_features))
+
+            # Apply Thresholding
+            #edge_features[edge_features<0.1] = 0
+            #node_features[node_features<0.1] = 0
+            #node_features = (node_features - np.min(node_features)) / (np.max(node_features) - np.min(node_features))
+            #for i in range(edge_features.shape[-1]):
+            #    edge_features[:,i] = (edge_features[:,i] - np.min(edge_features[:,i])) / (np.max(edge_features[:,i]) - np.min(edge_features[:,i]))
 
             self.subjects.append(Data(x=torch.from_numpy(node_features).float(), edge_index=torch.from_numpy(edge_index).long(), edge_attr=torch.from_numpy(edge_features).float(), y=label))
 
     def __getitem__(self, idx):
         return self.subjects[idx]
-        #return aug(self.subjects[idx])
 
     def __len__(self):
         return len(self.subjects)
@@ -135,12 +141,13 @@ class CustomModel(torch.nn.Module):
         self.linear = nn.Linear(self.hidden_size, 1)
 
         """
-        # Dynamic number of GATConv layers
+        # Dynamic number of GATConv layers where num features doubles every layer
         self.convs = nn.ModuleList([GATConv(self.num_features, self.hidden_size, edge_dim = self.num_edge_features)] 
             + [GATConv(self.hidden_size*(2**x), self.hidden_size*(2**(x+1)), edge_dim=self.num_edge_features) for x in range(args.depth-1)])
 
         self.linear = nn.Linear(self.hidden_size * (2**(args.depth-1)), 1)
         """
+
     """
     - node_features = num nodes x num_node_features (i.e. list of all node features)
     - edge_index    = 2 x num_edges (i.e. a list of all edges in the graph; if undirected, 
@@ -217,6 +224,8 @@ print("Training on: ", device)
 
 # Create the dataset
 whole_dataset = CustomDataset('./84x84_dataset')
+#whole_dataset = CustomDataset('./84x84_dataset_0.05_thresh')
+#whole_dataset = CustomDataset('./84x84_dataset_0.9_threshold')
 
 """
 shuffle=True will shuffle the items in the dataset before splitting them into 5 folds
@@ -345,8 +354,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
             # Plot the losses
             loss_plotter.plot('score', 'valid loss', 'Metric Curves', epoch, valid_loss/valid_count, yaxis_type='log')
             loss_plotter.plot('score', 'train loss', 'Metric Curves', epoch, train_loss/train_count, yaxis_type='log')
-            loss_plotter.plot('score', 'valid MAE', 'Metric Curves', epoch, valid_mae, yaxis_type='log')
-            loss_plotter.plot('score', 'train MAE', 'Metric Curves', epoch, train_mae, yaxis_type='log')
 
             # Plot the metrics
             score_plotter.plot('score', 'train min', 'Metric Curves', epoch, min(train_outs), yaxis_type='linear')
@@ -355,6 +362,10 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(whole_dataset)):
             score_plotter.plot('score', 'valid min', 'Metric Curves', epoch, min(valid_outs), yaxis_type='linear')
             score_plotter.plot('score', 'valid max', 'Metric Curves', epoch, max(valid_outs), yaxis_type='linear')
             score_plotter.plot('score', 'valid mean', 'Metric Curves', epoch, sum(valid_outs)/len(valid_outs), yaxis_type='linear')
+            score_plotter.plot('score', 'valid R', 'Metric Curves', epoch, valid_r, yaxis_type='linear')
+            score_plotter.plot('score', 'train R', 'Metric Curves', epoch, train_r, yaxis_type='linear')
+            score_plotter.plot('score', 'train MAE', 'Metric Curves', epoch, train_mae, yaxis_type='linear')
+            score_plotter.plot('score', 'valid MAE', 'Metric Curves', epoch, valid_mae, yaxis_type='linear')
 
             # Plot the histograms
             train_win = vis.histogram(train_outs, win=train_win, opts=train_opts, env='Age Prediction')
