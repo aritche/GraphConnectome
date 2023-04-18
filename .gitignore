@@ -2,7 +2,7 @@ train/
 valid/
 dataset/
 logs/
-results/
+results/*
 separated_atlas/
 subsampled_clusters/
 .DS_Store
