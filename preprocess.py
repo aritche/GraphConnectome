@@ -53,6 +53,7 @@ os.mkdir('./84x84_dataset_' + save_suffix)
 os.mkdir('./84x84_dataset_' + save_suffix + '/node_features')
 os.mkdir('./84x84_dataset_' + save_suffix + '/edge_features')
 os.mkdir('./84x84_dataset_' + save_suffix + '/edge_index')
+os.mkdir('./84x84_dataset_' + save_suffix + '/adj_matrices')
 
 i = 0
 for fn in glob('./111x111_connectomes/*.npy'):
@@ -70,6 +71,7 @@ for fn in glob('./111x111_connectomes/*.npy'):
     cols = []
     edge_features = []
     node_features = []
+    adj_matrix = []
 
     # temporarily remove self edges 
     no_self_edges = x.copy()
@@ -91,6 +93,7 @@ for fn in glob('./111x111_connectomes/*.npy'):
 
     for row in range(len(x)):
         #node_features.append([0]) # constant node features
+        adj_matrix.append(no_self_edges[row,:,:])
         node_features.append(no_self_edges[row,:,0]) # SL profile as node features
         for col in range(len(x[row])):
             if row == col: # exclude self-edges
@@ -104,12 +107,14 @@ for fn in glob('./111x111_connectomes/*.npy'):
     edge_index = np.array([rows,cols])
     edge_features = np.array(edge_features)
     node_features = np.array(node_features)
+    adj_matrix = np.array(adj_matrix)
 
     subject_id = fn.split('/')[-1].split('.')[0]
 
     np.save('./84x84_dataset_'+save_suffix+'/node_features/' + subject_id + '.npy', node_features)
     np.save('./84x84_dataset_'+save_suffix+'/edge_features/' + subject_id + '.npy', edge_features)
     np.save('./84x84_dataset_'+save_suffix+'/edge_index/' + subject_id + '.npy', edge_index)
+    np.save('./84x84_dataset_'+save_suffix+'/adj_matrices/' + subject_id + '.npy', adj_matrix)
 
     print(i)
     i += 1
