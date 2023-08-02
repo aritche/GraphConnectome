@@ -139,8 +139,9 @@ t0 = time.time()
 gm_mapping = get_gm_mapping('GM_ids.txt')                    # region name  -> [ID1, ID2, ...]
 labels = get_labels('cluster_hemisphere_location.txt')       # cluster name -> 'h' or 'c'
 tracts = get_tracts('FiberClusterAnnotation_k0800_v1.0.csv') # cluster name -> tract or falsepositive or partial or unkown
-subjects = get_subject_mapping('HCP_n1065_allDWI_fiber_clusters.csv')
+subjects = get_subject_mapping('HCP_n1065_allDWI_fiber_clusters.csv') # subjects[subject_id][hemisphere/cluster_ID][property], e.g.  subjects['397760']['tracts_right_hemisphere/cluster_00778']['Num_Fibers']
 
+# Aggregrate a list of filenames for clusters
 clusters = tracts.keys()
 cluster_fns = []
 for cluster_id in clusters:
@@ -162,7 +163,10 @@ for cluster_id in clusters:
         cluster_fn = target_dir + '/' + cluster_id
         cluster_fns.append(cluster_fn)
 
-subsamples = {} # cluster -> [region_pair, region_pair, ...]
+# Aggregrate the regions that each cluster connects
+# E.g. subsamples['tracts_right_hemisphere/cluster_00778'] 
+#      = ('rhsuperiorparietal_rhrostralmiddlefrontal', 'rhlingual_rhlateralorbitofrontal', ...)
+subsamples = {}
 for fn in glob('./subsampled_clusters/*.vtp'):
     cluster_dir, subsample_info = fn.split('\\')[-1].split('-')[1:]
     cluster_id = '_'.join(subsample_info.split('_')[:2])
@@ -172,6 +176,13 @@ for fn in glob('./subsampled_clusters/*.vtp'):
     else:
         subsamples[cluster_dir + '/' + cluster_id] = set([region_id])
 
+"""
+Generate an adjacency matrix, where each region is a node, and each edge stores these stats:
+    - a list of all clusters that contain the cooresponding region pair
+    - a list of the TOTAL NoS of each cluster that contains the corresponding region pair
+    - a list of the NoS between the corresponding region pair for each cluster that contains the coresponding region pair
+    - same as previous 2 lists, but for number of points instead of number of streamlines
+"""
 regions = sorted(gm_mapping.keys())
 i = 0
 atlas_weights = {} # adjaceny matrix
@@ -179,7 +190,6 @@ ids = [] # column IDs
 times = []
 for regionA in regions:
     regionA = regionA.replace('-', '')
-    q = 0
     time_region_start = time.time()
     for regionB in regions:
         regionB = regionB.replace('-', '')
@@ -219,6 +229,14 @@ with open('weights.pkl', 'wb') as f:
 t1 = time.time()
 print('Time for weight computation: %.2f minutes' % ((t1 - t0)/60))
 
+
+"""
+Now using the stats we've computed, which we will refer to as the 'atlas'. We want to estimate 
+a connectome for each subject. To estimate the NoS between regionA and regionB for a specific 
+subject, we iterate over all clusters that connect regionA and regionB in our cluster data, and
+compute a sum of the subject's cluster's total NoS, weighted by the ratio of the NoS connecting 
+regionA and regionB in the atlas's cluster to the total NoS in the atlas's cluster.
+"""
 t2 = time.time()
 connectome = {}
 times = []
